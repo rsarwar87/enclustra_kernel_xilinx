@@ -144,5 +144,11 @@ x509.genkey
 # Kdevelop4
 *.kdev4
 
+<<<<<<< HEAD
 # Clang's compilation database file
 /compile_commands.json
+=======
+# Enclustra buildscripts related files
+postfetch.sh
+postbuild.sh
+>>>>>>> v1.8.2

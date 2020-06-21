@@ -922,6 +922,7 @@ static int zynq_gpio_probe(struct platform_device *pdev)
 	chip->direction_output = zynq_gpio_dir_out;
 	chip->get_direction = zynq_gpio_get_direction;
 	chip->base = of_alias_get_id(pdev->dev.of_node, "gpio");
+	chip->base = 0;
 	chip->ngpio = gpio->p_data->ngpio;
 
 	/* Retrieve GPIO clock */
