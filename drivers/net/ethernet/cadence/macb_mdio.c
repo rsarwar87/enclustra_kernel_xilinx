@@ -1,7 +1,7 @@
 /*
  * Cadence Macb mdio controller driver
  *
- * Copyright (C) 2014 - 2016 Xilinx, Inc.
+ * Copyright (C) 2014 - 2018 Xilinx, Inc.
  *
  * This program is free software; you can redistribute it and/or modify it under
  * the terms of the GNU General Public License version 2 as published by the
@@ -22,6 +22,7 @@
 #include <linux/ptp_clock_kernel.h>
 #include "macb.h"
 
+
 struct macb_mdio_data {
 	void __iomem *regs;
 
@@ -37,43 +38,48 @@ struct macb_mdio_data {
 #define macb_mdio_reg_readl(bp, offset)	readl_relaxed(bp->regs + offset)
 #define macb_mdio_readl(bp, reg)	macb_mdio_reg_readl(bp, MACB_##reg)
 
+#define MACB_MDIO_TIMEOUT	1000
+
+static int macb_mdio_wait_for_idle(struct macb_mdio_data *bp)
+{
+	ulong timeout;
+
+	timeout = jiffies + msecs_to_jiffies(MACB_MDIO_TIMEOUT);
+	/* wait for end of transfer */
+	while (1) {
+		if (MACB_BFEXT(IDLE, macb_mdio_readl(bp, NSR)))
+			break;
+
+		if (time_after_eq(jiffies, timeout)) {
+			//netdev_err(bp->dev, "wait for end of transfer timed out\n");
+			return -ETIMEDOUT;
+		}
+
+		cpu_relax();
+	}
+
+	return 0;
+}
+
 static int macb_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 {
 	struct macb_mdio_data *bp = bus->priv;
 	int value;
-	ulong timeout;
+	int err;
 
-	timeout = jiffies + msecs_to_jiffies(1000);
-	/* wait for end of transfer */
-	do {
-		if (MACB_BFEXT(IDLE, macb_mdio_readl(bp, NSR)))
-			break;
+	err = macb_mdio_wait_for_idle(bp);
+	if (err < 0)
+		return err;
 
-		cpu_relax();
-	} while (!time_after_eq(jiffies, timeout));
+	macb_mdio_writel(bp, MAN, (MACB_BF(SOF, MACB_MAN_SOF) |
+				   MACB_BF(RW, MACB_MAN_READ) |
+				   MACB_BF(PHYA, mii_id) |
+				   MACB_BF(REGA, regnum) |
+				   MACB_BF(CODE, MACB_MAN_CODE)));
 
-	if (time_after_eq(jiffies, timeout)) {
-		return -ETIMEDOUT;
-	}
-
-	macb_mdio_writel(bp, MAN, (MACB_BF(SOF, MACB_MAN_SOF)
-			      | MACB_BF(RW, MACB_MAN_READ)
-			      | MACB_BF(PHYA, mii_id)
-			      | MACB_BF(REGA, regnum)
-			      | MACB_BF(CODE, MACB_MAN_CODE)));
-
-	timeout = jiffies + msecs_to_jiffies(1000);
-	/* wait for end of transfer */
-	do {
-		if (MACB_BFEXT(IDLE, macb_mdio_readl(bp, NSR)))
-			break;
-
-		cpu_relax();
-	} while (!time_after_eq(jiffies, timeout));
-
-	if (time_after_eq(jiffies, timeout)) {
-		return -ETIMEDOUT;
-	}
+	err = macb_mdio_wait_for_idle(bp);
+	if (err < 0)
+		return err;
 
 	value = MACB_BFEXT(DATA, macb_mdio_readl(bp, MAN));
 
@@ -84,40 +90,22 @@ static int macb_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
 			   u16 value)
 {
 	struct macb_mdio_data *bp = bus->priv;
-	ulong timeout;
+	int err;
 
-	timeout = jiffies + msecs_to_jiffies(1000);
-	/* wait for end of transfer */
-	do {
-		if (MACB_BFEXT(IDLE, macb_mdio_readl(bp, NSR)))
-			break;
+	err = macb_mdio_wait_for_idle(bp);
+	if (err < 0)
+		return err;
 
-		cpu_relax();
-	} while (!time_after_eq(jiffies, timeout));
+	macb_mdio_writel(bp, MAN, (MACB_BF(SOF, MACB_MAN_SOF) |
+				   MACB_BF(RW, MACB_MAN_WRITE) |
+				   MACB_BF(PHYA, mii_id) |
+				   MACB_BF(REGA, regnum) |
+				   MACB_BF(CODE, MACB_MAN_CODE) |
+				   MACB_BF(DATA, value)));
 
-	if (time_after_eq(jiffies, timeout)) {
-		return -ETIMEDOUT;
-	}
-
-	macb_mdio_writel(bp, MAN, (MACB_BF(SOF, MACB_MAN_SOF)
-			      | MACB_BF(RW, MACB_MAN_WRITE)
-			      | MACB_BF(PHYA, mii_id)
-			      | MACB_BF(REGA, regnum)
-			      | MACB_BF(CODE, MACB_MAN_CODE)
-			      | MACB_BF(DATA, value)));
-
-	timeout = jiffies + msecs_to_jiffies(1000);
-	/* wait for end of transfer */
-	do {
-		if (MACB_BFEXT(IDLE, macb_mdio_readl(bp, NSR)))
-			break;
-
-		cpu_relax();
-	} while (!time_after_eq(jiffies, timeout));
-
-	if (time_after_eq(jiffies, timeout)) {
-		return -ETIMEDOUT;
-	}
+	err = macb_mdio_wait_for_idle(bp);
+	if (err < 0)
+		return err;
 
 	return 0;
 }
@@ -161,11 +149,6 @@ static int macb_mdio_probe(struct platform_device *pdev)
 	bus->write = &macb_mdio_write;
 	snprintf(bus->id, MII_BUS_ID_SIZE, "%s-mii", dev_name(&pdev->dev));
 	bus->parent = &pdev->dev;
-
-	if (!bus->irq) {
-		ret = -ENOMEM;
-		goto err_out_free_mdiobus;
-	}
 
 	bp = bus->priv;
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -234,21 +217,16 @@ static int macb_mdio_probe(struct platform_device *pdev)
 				goto err_out_unregister_bus;
 		}
 	} else {
-		for (i = 0; i < PHY_MAX_ADDR; i++)
-			bus->irq[i] = PHY_POLL;
-
 		ret = of_mdiobus_register(bus, np);
 	}
 
 	if (ret)
-		goto err_out_free_mdio_irq;
+		goto err_disable_pclk;
 
 	return 0;
 
 err_out_unregister_bus:
 	mdiobus_unregister(bus);
-err_out_free_mdio_irq:
-	kfree(bus->irq);
 err_disable_pclk:
 	clk_disable_unprepare(bp->pclk);
 	clk_disable_unprepare(bp->hclk);

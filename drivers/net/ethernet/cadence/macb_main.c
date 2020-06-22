@@ -436,25 +436,35 @@ static int macb_mii_probe(struct net_device *dev)
 {
 	struct macb *bp = netdev_priv(dev);
 	struct phy_device *phydev;
+  int ret;
 
-	if (bp->phy_node) {
-		phydev = of_phy_connect(dev, bp->phy_node,
-					&macb_handle_link_change, 0,
-					bp->phy_interface);
-		if (!phydev)
-			return -ENODEV;
-	}else return -ENXIO;
 
+	if (bp->phy_dev)
+  return 0;
+	phydev = of_phy_find_device(bp->phy_node);
+	if (!phydev) {
+		netdev_err(dev, "no PHY found\n");
+		return -ENXIO;
+	}
+	if (bp->phy_irq)
+		phydev->irq = bp->phy_irq;
+	/* attach the mac to the phy */
+	ret = phy_connect_direct(dev, phydev, &macb_handle_link_change,
+				 bp->phy_interface);
+	if (ret) {
+		netdev_err(dev, "Could not attach to PHY\n");
+		return ret;
+  }
 	/* mask with MAC supported features */
 	if (macb_is_gem(bp) && bp->caps & MACB_CAPS_GIGABIT_MODE_AVAILABLE)
-		phydev->supported &= PHY_GBIT_FEATURES;
+		phy_set_max_speed(phydev, SPEED_1000);
 	else
-		phydev->supported &= PHY_BASIC_FEATURES;
+		phy_set_max_speed(phydev, SPEED_100);
 
 	if (bp->caps & MACB_CAPS_NO_GIGABIT_HALF)
-		phydev->supported &= ~SUPPORTED_1000baseT_Half;
+		phy_remove_link_mode(phydev,
+				     ETHTOOL_LINK_MODE_1000baseT_Half_BIT);
 
-	phydev->advertising = phydev->supported;
 
 	bp->link = 0;
 	bp->speed = 0;
@@ -3587,6 +3597,8 @@ static int macb_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Cannot register net device, aborting.\n");
 		goto err_out_unregister_netdev;
 	}
+	bp->phy_node = of_parse_phandle(bp->pdev->dev.of_node,
+					"phy-handle", 0);
 
 
 	pdata = dev_get_platdata(&bp->pdev->dev);
@@ -3649,9 +3661,6 @@ static int macb_remove(struct platform_device *pdev)
 		bp = netdev_priv(dev);
 		if (bp->phy_dev)
 			phy_disconnect(bp->phy_dev);
-		mdiobus_unregister(bp->mii_bus);
-		dev->phydev = NULL;
-		mdiobus_free(bp->mii_bus);
 
 		/* Shutdown the PHY if there is a GPIO reset */
 		if (bp->reset_gpio)
@@ -3787,12 +3796,6 @@ static int __maybe_unused macb_runtime_suspend(struct device *dev)
 	struct net_device *netdev = platform_get_drvdata(pdev);
 	struct macb *bp = netdev_priv(netdev);
 
-	if (!(device_may_wakeup(&bp->dev->dev))) {
-		clk_disable_unprepare(bp->tx_clk);
-		clk_disable_unprepare(bp->hclk);
-		clk_disable_unprepare(bp->pclk);
-		clk_disable_unprepare(bp->rx_clk);
-	}
 	clk_disable_unprepare(bp->tsu_clk);
 
 	return 0;
@@ -3804,12 +3807,6 @@ static int __maybe_unused macb_runtime_resume(struct device *dev)
 	struct net_device *netdev = platform_get_drvdata(pdev);
 	struct macb *bp = netdev_priv(netdev);
 
-	if (!(device_may_wakeup(&bp->dev->dev))) {
-		clk_prepare_enable(bp->pclk);
-		clk_prepare_enable(bp->hclk);
-		clk_prepare_enable(bp->tx_clk);
-		clk_prepare_enable(bp->rx_clk);
-	}
 	clk_prepare_enable(bp->tsu_clk);
 
 	return 0;
